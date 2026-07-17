@@ -10,8 +10,11 @@ This is a Google Sheets → Discord webhook monitor for tracking "Ye Tracker" sp
 
 - **`sheets.py`** — Active production script. Reads from the `📄 Trackers` sheet, detects new rows, and sends rich Discord embeds with color-coded categories (trackers=green, websites=yellow, archive=purple).
 - **`sheet2(test).py`** — Older/simpler test version. Same logic but sends plain text Discord messages without embed formatting or type categorization.
-- **`credentials.json`** — Google service account credentials for Sheets API access.
-- **`sheet_output.txt`** — Persistent cache of previously seen rows (used to detect new rows across restarts).
+- **`credentials.json`** — Local Google service account credentials (gitignored — not committed to GitHub).
+- **`sheet_output.txt`** — Persistent cache of previously seen rows (gitignored).
+- **`railway.json`** — Railway.app deployment config defining the worker process.
+- **`.env.example`** — Template for required environment variables.
+- **`requirements.txt`** — Python dependencies.
 
 ### Data flow
 
@@ -45,10 +48,31 @@ python sheets.py
 
 Dependencies: `google-api-python-client`, `google-auth`, `requests` (all installed in `.venv`).
 
-## Configuration
+## Configuration (Environment Variables)
 
-- `CREDS_FILE` — path to Google service account JSON (default: `credentials.json`)
-- `SPREADSHEET_ID` — target Google Sheet ID
-- `WEBHOOK_URL` — Discord webhook URL
-- `OUTPUT_FILE` — path to row cache (default: `sheet_output.txt`)
-- Loop interval: 120 seconds in `sheets.py`, 3600 seconds in `sheet2(test).py`
+Secrets are read from environment variables, with fallbacks for local development:
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `SPREADSHEET_ID` | Yes | (hardcoded fallback) | Google Sheet ID to monitor |
+| `WEBHOOK_URL` | Yes | (hardcoded fallback) | Discord webhook URL |
+| `GOOGLE_CREDS_JSON` | On Railway | — | Full service account JSON as a single string |
+| `GOOGLE_CREDS_FILE` | Local | `credentials.json` | Path to local credentials file |
+| `LOOP_INTERVAL` | No | `120` | Poll interval in seconds |
+
+For local dev, either set `GOOGLE_CREDS_JSON` or keep `credentials.json` in the project root.
+
+## Deployment (Railway.app)
+
+The project is set up for Railway.app with auto-deploy from GitHub:
+
+1. Push to a GitHub repo
+2. In Railway, create a **new project** → **Deploy from GitHub repo**
+3. Railway auto-detects the Python builder via `railway.json`
+4. Set the environment variables in Railway's dashboard:
+   - `SPREADSHEET_ID`
+   - `WEBHOOK_URL`
+   - `GOOGLE_CREDS_JSON` (paste the entire `credentials.json` content)
+5. Railway starts `python sheets.py` as a worker — it runs 24/7
+
+To update the running script, push to the GitHub repo and Railway redeploys automatically.

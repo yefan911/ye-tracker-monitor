@@ -242,6 +242,7 @@ def get_credentials():
 
 
 previous_rows = load_previous_rows(OUTPUT_FILE)
+had_cache = os.path.exists(OUTPUT_FILE)  # track if we had a cache file (prevents re-sending ALL rows on Railway restarts)
 buffer_rows = 20
 range_limit = max(511, len(previous_rows) + buffer_rows)
 RANGE_NAME = f"📄 Trackers!A1:F{range_limit}"
@@ -265,7 +266,10 @@ while True:
             print(row)
             output_file.write(str(row) + "\n")
 
-    if new_rows:
+    if new_rows and not had_cache:
+        print(f"First run (no cache) — saving {len(rows)} rows without sending notifications.")
+        had_cache = True
+    elif new_rows:
         summary = {
             "embeds": [{
                 "title": "🆕 New rows detected",
