@@ -25,11 +25,15 @@ TYPE_COLORS = {
     "trackers": 0x2ECC71,
     "websites": 0xF1C40F,
     "archive": 0x9B59B6,
+    "star": 0xF1C40F,
+    "trash": 0x99AAB5,
 }
 TYPE_SIDEBARS = {
     "trackers": "🟩",
     "websites": "🟨",
     "archive": "🟪",
+    "star": "⭐",
+    "trash": "🗑️",
 }
 
 
@@ -84,6 +88,10 @@ def normalize_entry_type(value):
         return "Websites"
     if lowered == "archive":
         return "Archive"
+    if "⭐" in text or "✨" in text:
+        return "Star"
+    if "🗑️" in text or "🗑" in text:
+        return "Trash"
     return text
 
 
