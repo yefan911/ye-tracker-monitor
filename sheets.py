@@ -1,10 +1,14 @@
 import ast
 import json
 import os
+import re
 import time
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+
+# Pattern to detect update-log rows like [x/xx/xx] reason...
+UPDATE_LOG_PATTERN = re.compile(r'^\[\d{1,2}/\d{1,2}/\d{2,4}\]')
 
 try:
     import requests
@@ -27,6 +31,14 @@ TYPE_SIDEBARS = {
     "websites": "🟨",
     "archive": "🟪",
 }
+
+
+def is_update_log_row(row):
+    """Check if a row is an internal update log entry (e.g., [8/6/24] Updated tracker X)."""
+    if not row or len(row) < 1:
+        return False
+    first_cell = str(row[0]).strip()
+    return bool(UPDATE_LOG_PATTERN.match(first_cell))
 
 
 def load_previous_rows(file_path):
@@ -52,7 +64,9 @@ def normalize_row(row):
 
 def get_new_rows(current_rows, previous_rows):
     previous_set = {tuple(normalize_row(row)) for row in previous_rows}
-    return [normalize_row(row) for row in current_rows if tuple(normalize_row(row)) not in previous_set]
+    new_rows = [normalize_row(row) for row in current_rows if tuple(normalize_row(row)) not in previous_set]
+    # Filter out update log rows
+    return [row for row in new_rows if not is_update_log_row(row)]
 
 
 def normalize_entry_type(value):
@@ -91,6 +105,10 @@ def extract_rows(current_rows, previous_rows):
         normalized_row = normalize_row(row)
         row_key = tuple(normalized_row)
         if row_key in previous_set:
+            continue
+
+        # Skip update log rows (e.g., [8/6/24] Updated tracker X)
+        if is_update_log_row(normalized_row):
             continue
 
         if not any(normalized_row):
