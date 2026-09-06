@@ -270,7 +270,7 @@ def get_credentials():
 previous_rows = load_previous_rows(OUTPUT_FILE)
 had_cache = os.path.exists(OUTPUT_FILE)  # track if we had a cache file (prevents re-sending ALL rows on Railway restarts)
 buffer_rows = 20
-range_limit = max(511, len(previous_rows) + buffer_rows)
+range_limit = max(1204, len(previous_rows) + buffer_rows)
 RANGE_NAME = f"📄 Trackers!A1:F{range_limit}"
 
 last_message_id = None
