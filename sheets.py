@@ -3,6 +3,7 @@ import json
 import os
 import re
 import time
+from urllib.parse import quote
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -21,6 +22,9 @@ SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1DUc-LSJlJb0x_jNqr5j75E39wa_V
 OUTPUT_FILE = "sheet_output.txt"
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://discord.com/api/webhooks/1527083499033723002/tfURdbbB323zwb7e_I3In-7t_uWqp16o9B0eNw9JccwJUpQjA0RSSxlCntyFc46nS-vF")
 LOOP_INTERVAL = int(os.environ.get("LOOP_INTERVAL", "120"))
+# Tabs to monitor, comma-separated. Default to original tracker tab.
+SHEET_TABS_ENV = os.environ.get("SHEET_TABS", "📄 Trackers")
+SHEET_TABS = [tab.strip() for tab in SHEET_TABS_ENV.split(",") if tab.strip()]
 TYPE_COLORS = {
     "trackers": 0x2ECC71,
     "websites": 0xF1C40F,
@@ -46,20 +50,36 @@ def is_update_log_row(row):
 
 
 def load_previous_rows(file_path):
+    """Load previous rows, supporting both legacy format and tab-prefixed format."""
     if not os.path.exists(file_path):
-        return []
+        return {}
 
-    previous_rows = []
+    # Returns dict: {tab_name: [rows]}
+    previous_rows_by_tab = {}
     with open(file_path, "r", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
             if not line:
                 continue
             try:
-                previous_rows.append(ast.literal_eval(line))
+                # Check if line is in new format: "TAB_NAME::: ROW_DATA"
+                if ":::" in line:
+                    tab_name, row_data_str = line.split(":::", 1)
+                    tab_name = tab_name.strip()
+                    row_data = ast.literal_eval(row_data_str.strip())
+                    if tab_name not in previous_rows_by_tab:
+                        previous_rows_by_tab[tab_name] = []
+                    previous_rows_by_tab[tab_name].append(row_data)
+                else:
+                    # Legacy format: entire line is row data, assume default tab
+                    row_data = ast.literal_eval(line)
+                    default_tab = "📄 Trackers"
+                    if default_tab not in previous_rows_by_tab:
+                        previous_rows_by_tab[default_tab] = []
+                    previous_rows_by_tab[default_tab].append(row_data)
             except (ValueError, SyntaxError):
                 continue
-    return previous_rows
+    return previous_rows_by_tab
 
 
 def normalize_row(row):
@@ -67,6 +87,7 @@ def normalize_row(row):
 
 
 def get_new_rows(current_rows, previous_rows):
+    """Get new rows by comparing current rows to previous rows."""
     previous_set = {tuple(normalize_row(row)) for row in previous_rows}
     new_rows = [normalize_row(row) for row in current_rows if tuple(normalize_row(row)) not in previous_set]
     # Filter out update log rows
@@ -267,45 +288,74 @@ def get_credentials():
     return Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES)
 
 
-previous_rows = load_previous_rows(OUTPUT_FILE)
+previous_rows_by_tab = load_previous_rows(OUTPUT_FILE)
 had_cache = os.path.exists(OUTPUT_FILE)  # track if we had a cache file (prevents re-sending ALL rows on Railway restarts)
 buffer_rows = 20
-range_limit = max(1204, len(previous_rows) + buffer_rows)
-RANGE_NAME = f"📄 Trackers!A1:F{range_limit}"
 
 last_message_id = None
 while True:
     creds = get_credentials()
     service = build("sheets", "v4", credentials=creds)
 
-    result = service.spreadsheets().values().get(
-        spreadsheetId=SPREADSHEET_ID,
-        range=RANGE_NAME
-    ).execute()
+    all_new_rows = []
+    all_entries = []
+    all_current_rows = []  # For caching
+    tabs_data = {}  # Store tab data to avoid redundant API calls
 
-    rows = result.get("values", [])
-    new_rows = get_new_rows(rows, previous_rows)
-    entries = extract_rows(rows, previous_rows)
+    # Process each tab
+    for tab_name in SHEET_TABS:
+        # Format tab name for Google Sheets API range
+        # If tab name contains spaces or special characters, wrap in single quotes
+        if any(c in tab_name for c in [' ', '(', ')', '+', '-', '=', '~', '!', '@', '#', '$', '%', '^', '&', '*']):
+            formatted_tab_name = f"'{tab_name}'"
+        else:
+            formatted_tab_name = tab_name
 
+        range_limit = max(1204, len(previous_rows_by_tab.get(tab_name, [])) + buffer_rows)
+        RANGE_NAME = f"{formatted_tab_name}!A1:F{range_limit}"
+
+        result = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=RANGE_NAME
+        ).execute()
+
+        rows = result.get("values", [])
+        tabs_data[tab_name] = rows  # Store for reuse
+        all_current_rows.extend(rows)  # Combine all rows for caching
+
+        # Get previous rows for this tab (default to empty list if tab not seen before)
+        previous_rows = previous_rows_by_tab.get(tab_name, [])
+        new_rows = get_new_rows(rows, previous_rows)
+        entries = extract_rows(rows, previous_rows)
+
+        all_new_rows.extend(new_rows)
+        all_entries.extend(entries)
+
+        # Use backslashreplace to safely represent non-ASCII characters in ASCII
+        safe_tab_name = tab_name.encode('ascii', errors='backslashreplace').decode('ascii')
+        print(f"Tab '{safe_tab_name}': {len(rows)} rows, {len(new_rows)} new")
+
+    # Save all rows with tab prefixes
     with open(OUTPUT_FILE, "w", encoding="utf-8") as output_file:
-        for row in rows:
-            print(row)
-            output_file.write(str(row) + "\n")
+        # Write all rows with tab prefixes
+        for tab_name, rows in tabs_data.items():
+            for row in rows:
+                output_file.write(f"{tab_name}::: {str(row)}\n")
 
-    if new_rows and not had_cache:
-        print(f"First run (no cache) — saving {len(rows)} rows without sending notifications.")
+    if all_new_rows and not had_cache:
+        print(f"First run (no cache) — saving {len(all_current_rows)} rows without sending notifications.")
         had_cache = True
-    elif new_rows:
+    elif all_new_rows:
         summary = {
             "embeds": [{
                 "title": "🆕 New rows detected",
-                "description": f"{len(new_rows)} new row(s) were found in the sheet.",
+                "description": f"{len(all_new_rows)} new row(s) were found across all tabs.",
                 "color": 0x5865F2,
             }],
         }
         try:
             send_discord_message(WEBHOOK_URL, [summary])
-            blocks = build_message_blocks(entries)
+            blocks = build_message_blocks(all_entries)
             send_discord_message(WEBHOOK_URL, blocks)
         except Exception as exc:
             print(f"Webhook failed: {exc}")
@@ -315,7 +365,11 @@ while True:
             last_message_id = None
         print("No new rows detected; skipping webhook update.")
 
-    previous_rows = rows
-    print(f"Saved {len(rows)} rows to {OUTPUT_FILE}")
+    # Update previous_rows_by_tab for next iteration using stored data
+    previous_rows_by_tab = tabs_data
+
+    # Safely print tab names by handling Unicode encoding issues
+    safe_tab_names = [name.encode('utf-8', errors='replace').decode('utf-8') for name in SHEET_TABS]
+    print(f"Saved rows from {len(SHEET_TABS)} tabs to {OUTPUT_FILE}")
     time.sleep(LOOP_INTERVAL)
 
